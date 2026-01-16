@@ -2,6 +2,7 @@
   "name": "defesa-civil-pr---laudo-de-imóveis",
   "private": true,
   "version": "0.0.0",
+  "homepage": "https://danielsentone.github.io/"
   "type": "module",
   "scripts": {
     "dev": "vite",
