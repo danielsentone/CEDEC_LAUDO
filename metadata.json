@@ -1,0 +1,8 @@
+{
+  "name": "Defesa Civil PR - Laudo de Imóveis",
+  "description": "Sistema para emissão de laudos técnicos de imóveis afetados por desastres naturais no estado do Paraná.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
