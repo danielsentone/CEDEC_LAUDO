@@ -1,9 +1,10 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { MUNICIPIOS_PR, TIPOLOGIAS, DANOS_OPCOES, ESTADOS_BR } from './constants';
 import { ClassificacaoDano, Engenheiro, Laudo } from './types';
 import { jsPDF } from 'jspdf';
-import { GoogleGenAI } from "@google/genai";
+
+declare const L: any;
 
 const App: React.FC = () => {
   const [engenheiros, setEngenheiros] = useState<Engenheiro[]>([
@@ -14,12 +15,15 @@ const App: React.FC = () => {
   ]);
 
   const [showEngForm, setShowEngForm] = useState(false);
+  const [showMapModal, setShowMapModal] = useState(false);
   const [newEng, setNewEng] = useState<Partial<Engenheiro>>({ estado: 'PR' });
-  const [isAnalyzing, setIsAnalyzing] = useState<string | null>(null);
+  
+  const mapInstance = useRef<any>(null);
+  const markerInstance = useRef<any>(null);
 
   const [formData, setFormData] = useState<Laudo>({
     municipio: '',
-    data: new Date().toISOString().split('T')[0],
+    data: new Date().toLocaleDateString('pt-BR'),
     engenheiroId: '',
     inscricaoMunicipal: '',
     proprietario: '',
@@ -34,446 +38,397 @@ const App: React.FC = () => {
     percentualDestruicao: '10%'
   });
 
-  const updateCalculatedFields = (classificacao: ClassificacaoDano) => {
-    let nivel = '';
-    let perc = '';
-    switch (classificacao) {
-      case ClassificacaoDano.MINIMOS:
-        nivel = 'Sem Destruição';
-        perc = '10%';
-        break;
-      case ClassificacaoDano.PARCIAIS:
-        nivel = 'Destruição Parcial Leve';
-        perc = '40%';
-        break;
-      case ClassificacaoDano.SEVEROS:
-        nivel = 'Destruição Parcial Grave';
-        perc = '70%';
-        break;
-      case ClassificacaoDano.RUINA:
-        nivel = 'Destruição Total';
-        perc = '100%';
-        break;
-    }
-    setFormData(prev => ({ ...prev, classificacao, nivelDestruicao: nivel, percentualDestruicao: perc }));
-  };
-
-  const handleAddEngenheiro = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (newEng.nome && newEng.crea && newEng.estado) {
-      const engineer: Engenheiro = {
-        id: Date.now().toString(),
-        nome: newEng.nome,
-        crea: newEng.crea,
-        estado: newEng.estado,
-      };
-      setEngenheiros(prev => [...prev, engineer]);
-      setFormData(prev => ({ ...prev, engenheiroId: engineer.id }));
-      setNewEng({ estado: 'PR' });
-      setShowEngForm(false);
-    }
-  };
-
-  const handleEngenheiroChange = (id: string) => {
-    if (id === 'OUTRO') {
-      setShowEngForm(true);
-    } else {
-      setFormData(prev => ({ ...prev, engenheiroId: id }));
-    }
-  };
-
-  const handleDanoToggle = (dano: string) => {
-    setFormData(prev => {
-      const exists = prev.danos.find(d => d.tipo === dano);
-      if (exists) {
-        return { ...prev, danos: prev.danos.filter(d => d.tipo !== dano) };
-      } else {
-        return { ...prev, danos: [...prev.danos, { tipo: dano, descricao: '', fotos: [] }] };
-      }
-    });
-  };
-
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = error => reject(error);
-    });
-  };
-
-  const handlePhotoUpload = async (danoTipo: string, e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const files = Array.from(e.target.files);
+  const initMap = async () => {
+    if (!showMapModal) return;
+    let center: [number, number] = [-25.4284, -49.2733];
+    if (formData.municipio) {
       try {
-        const base64Photos = await Promise.all(files.map(file => fileToBase64(file as File)));
-        setFormData(prev => ({
-          ...prev,
-          danos: prev.danos.map(d => d.tipo === danoTipo ? { ...d, fotos: [...d.fotos, ...base64Photos] } : d)
-        }));
-        if (base64Photos.length > 0) {
-          analyzeDamageWithAI(danoTipo, base64Photos[0]);
-        }
-      } catch (err) {
-        console.error("Erro no upload:", err);
-      }
+        const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${formData.municipio},Paraná,Brazil&limit=1`);
+        const data = await resp.json();
+        if (data && data[0]) center = [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+      } catch (e) {}
     }
-  };
 
-  const analyzeDamageWithAI = async (danoTipo: string, base64Image: string) => {
-    setIsAnalyzing(danoTipo);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const base64Data = base64Image.split(',')[1];
-      const mimeType = base64Image.split(';')[0].split(':')[1];
-      
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: {
-          parts: [
-            { inlineData: { data: base64Data, mimeType } },
-            { text: `Você é um engenheiro da Defesa Civil do Paraná. Descreva tecnicamente o dano no elemento "${danoTipo}" visível nesta imagem. Seja sucinto e use terminologia de engenharia diagnóstica. Responda apenas com a descrição técnica.` }
-          ]
-        }
+    setTimeout(() => {
+      const map = L.map('map-selector', { center, zoom: 16 });
+      mapInstance.current = map;
+      const googleHybrid = L.tileLayer('https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+        maxZoom: 20, subdomains: ['mt0', 'mt1', 'mt2', 'mt3'], attribution: 'Google'
       });
-      const description = response.text || '';
-      setFormData(prev => ({
-        ...prev,
-        danos: prev.danos.map(d => d.tipo === danoTipo ? { ...d, descricao: description } : d)
-      }));
-    } catch (error) {
-      console.error("AI Analysis failed:", error);
-    } finally {
-      setIsAnalyzing(null);
-    }
+      googleHybrid.addTo(map);
+      const marker = L.marker(center, { draggable: true }).addTo(map);
+      markerInstance.current = marker;
+
+      const reverseGeocode = async (lat: number, lng: number) => {
+        setFormData(prev => ({ ...prev, coordenadas: { lat: lat.toFixed(6), lng: lng.toFixed(6) } }));
+        try {
+          const resp = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+          const data = await resp.json();
+          if (data && data.address) {
+            const a = data.address;
+            const rua = a.road || a.pedestrian || '';
+            const num = a.house_number || 'S/N';
+            const bairro = a.suburb || a.neighbourhood || a.village || '';
+            const cep = a.postcode || '';
+            setFormData(prev => ({ ...prev, endereco: `${rua}, ${num}, ${bairro} - CEP: ${cep}` }));
+          }
+        } catch (e) {}
+      };
+
+      map.on('click', (e: any) => { marker.setLatLng(e.latlng); reverseGeocode(e.latlng.lat, e.latlng.lng); });
+      marker.on('dragend', (e: any) => { reverseGeocode(e.target.getLatLng().lat, e.target.getLatLng().lng); });
+    }, 200);
   };
 
-  const drawHeader = (doc: jsPDF) => {
-    doc.setFontSize(11);
-    doc.setFont('helvetica', 'bold');
-    doc.text('ESTADO DO PARANÁ', 105, 20, { align: 'center' });
-    doc.text('COORDENADORIA ESTADUAL DA DEFESA CIVIL', 105, 25, { align: 'center' });
-    doc.text('FUNDO ESTADUAL PARA CALAMIDADES PÚBLICAS', 105, 30, { align: 'center' });
-  };
+  useEffect(() => {
+    if (showMapModal) initMap();
+    return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
+  }, [showMapModal]);
 
-  const drawFooter = (doc: jsPDF) => {
-    const pageHeight = doc.internal.pageSize.height;
-    doc.setDrawColor(0, 102, 204);
-    doc.setLineWidth(1.5);
-    doc.line(20, pageHeight - 25, 150, pageHeight - 25);
-    doc.setDrawColor(0, 153, 51);
-    doc.line(150, pageHeight - 25, 190, pageHeight - 25);
-    
-    doc.setFontSize(8);
-    doc.setFont('helvetica', 'normal');
-    doc.text('Palácio das Araucárias - 1º andar - Setor C | Centro Cívico | Curitiba/PR | CEP 80.530-140', 105, pageHeight - 18, { align: 'center' });
-    doc.text('E-mail: defesacivil@defesacivil.pr.gov.br | Fone: (41) 3281-2500', 105, pageHeight - 14, { align: 'center' });
-    doc.setFont('helvetica', 'bold');
-    doc.text('“Defesa Civil somos todos nós”', 105, pageHeight - 8, { align: 'center' });
+  const updateCalculatedFields = (classificacao: ClassificacaoDano) => {
+    const table: Record<ClassificacaoDano, { nivel: string, perc: string }> = {
+      [ClassificacaoDano.MINIMOS]: { nivel: 'Sem Destruição', perc: '10%' },
+      [ClassificacaoDano.PARCIAIS]: { nivel: 'Destruição Parcial Leve', perc: '40%' },
+      [ClassificacaoDano.SEVEROS]: { nivel: 'Destruição Parcial Grave', perc: '70%' },
+      [ClassificacaoDano.RUINA]: { nivel: 'Destruição Total', perc: '100%' },
+    };
+    const { nivel, perc } = table[classificacao];
+    setFormData(prev => ({ ...prev, classificacao, nivelDestruicao: nivel, percentualDestruicao: perc }));
   };
 
   const generatePDF = async () => {
     const doc = new jsPDF();
     const eng = engenheiros.find(e => e.id === formData.engenheiroId);
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+
+    const drawCommonLayout = (d: jsPDF) => {
+      d.setFontSize(10); d.setFont('helvetica', 'bold');
+      d.text('ESTADO DO PARANÁ', 105, 15, { align: 'center' });
+      d.text('COORDENADORIA ESTADUAL DA DEFESA CIVIL', 105, 20, { align: 'center' });
+      d.text('FUNDO ESTADUAL PARA CALAMIDADES PÚBLICAS', 105, 25, { align: 'center' });
+      
+      d.setDrawColor(0, 51, 102); d.setLineWidth(2); d.line(0, pageHeight - 20, 160, pageHeight - 20);
+      d.setDrawColor(255, 102, 0); d.line(160, pageHeight - 20, pageWidth, pageHeight - 20);
+      
+      d.setFontSize(7); d.setFont('helvetica', 'normal');
+      d.text('Palácio das Araucárias - 1º andar - Setor C | Centro Cívico | Curitiba/PR | CEP 80.530-140', 105, pageHeight - 12, { align: 'center' });
+      d.text('E-mail: defesacivil@defesacivil.pr.gov.br | Fone: (41) 3281-2500', 105, pageHeight - 9, { align: 'center' });
+      d.setFont('helvetica', 'bold'); d.text('“Defesa Civil somos todos nós”', 105, pageHeight - 4, { align: 'center' });
+    };
+
+    drawCommonLayout(doc);
+    doc.setFontSize(14); doc.setFont('helvetica', 'bold');
+    doc.text('LAUDO DE IMÓVEL AFETADO POR EVENTO CLIMÁTICO', 105, 40, { align: 'center' });
     
-    // PAGE 1
-    drawHeader(doc);
-    doc.setFontSize(14);
-    doc.setFont('helvetica', 'bold');
-    doc.text('LAUDO DE IMÓVEL AFETADO POR EVENTO CLIMÁTICO', 105, 50, { align: 'center' });
-    doc.setFontSize(11);
-    doc.text(`MUNICÍPIO: ${formData.municipio.toUpperCase()}`, 20, 65);
-    doc.text(`DATA: ${formData.data}`, 20, 75);
-    doc.text('INFORMAÇÕES DO IMÓVEL', 105, 95, { align: 'center' });
     doc.setFontSize(10);
-    doc.text(`INSCRIÇÃO MUNICIPAL: ${formData.inscricaoMunicipal}`, 20, 110);
-    doc.text(`PROPRIETÁRIO: ${formData.proprietario.toUpperCase()}`, 20, 120);
-    doc.text(`REQUERENTE: ${formData.requerente.toUpperCase()}`, 20, 130);
-    doc.text(`ENDEREÇO: ${formData.endereco.toUpperCase()}`, 20, 140);
-    doc.text(`COORDENADAS: ${formData.coordenadas.lat}, ${formData.coordenadas.lng}`, 20, 150);
-    doc.text(`TIPOLOGIA: ${formData.tipologia === 'Outro' ? formData.tipologiaOutro?.toUpperCase() : formData.tipologia.toUpperCase()}`, 20, 160);
-    drawFooter(doc);
+    doc.text('MUNICÍPIO:', 20, 55); doc.setFont('helvetica', 'normal'); doc.text(formData.municipio.toUpperCase(), 45, 55);
+    doc.setFont('helvetica', 'bold'); doc.text('DATA:', 20, 65); doc.setFont('helvetica', 'normal'); doc.text(formData.data, 35, 65);
 
-    // PAGE 2 (Levantamento de Danos)
-    doc.addPage();
-    drawHeader(doc);
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'bold');
-    doc.text('LEVANTAMENTO DE DANOS', 105, 50, { align: 'center' });
+    doc.setFontSize(12); doc.setFont('helvetica', 'bold');
+    doc.text('INFORMAÇÕES DO IMÓVEL', 105, 80, { align: 'center' });
     
-    let y = 65;
-    formData.danos.forEach((dano) => {
-      if (y > 220) {
-        drawFooter(doc);
-        doc.addPage();
-        drawHeader(doc);
-        y = 50;
-      }
-      doc.setFontSize(10);
-      doc.setFont('helvetica', 'bold');
-      doc.text(`${dano.tipo.toUpperCase()}:`, 20, y);
-      doc.setFont('helvetica', 'normal');
-      const lines = doc.splitTextToSize(dano.descricao, 170);
-      doc.text(lines, 20, y + 5);
-      y += 10 + (lines.length * 5);
-      if (dano.fotos.length > 0) {
-        let photoX = 20;
-        dano.fotos.slice(0, 2).forEach((foto) => {
-          try {
-            doc.addImage(foto, 'JPEG', photoX, y, 80, 60);
-            photoX += 90;
-          } catch(e) { console.error(e); }
-        });
-        y += 70;
-      }
-      y += 5;
-    });
+    doc.setFontSize(10);
+    const addLine = (label: string, value: string, y: number) => {
+      doc.setFont('helvetica', 'bold'); doc.text(`${label}:`, 20, y);
+      doc.setFont('helvetica', 'normal'); doc.text(value.toUpperCase() || '', 65, y);
+    };
 
-    if (y > 180) {
-      drawFooter(doc);
-      doc.addPage();
-      drawHeader(doc);
-      y = 50;
+    addLine('INSCRIÇÃO MUNICIPAL', formData.inscricaoMunicipal, 95);
+    addLine('PROPRIETÁRIO', formData.proprietario, 105);
+    addLine('REQUERENTE', formData.requerente, 115);
+    addLine('ENDEREÇO', formData.endereco, 125);
+    addLine('COORDENADAS', `${formData.coordenadas.lat}, ${formData.coordenadas.lng}`, 135);
+
+    doc.setDrawColor(0); doc.setLineWidth(0.5);
+    doc.rect(20, 145, 170, 80);
+    doc.setFontSize(8); doc.text('ESPAÇO RESERVADO PARA LOCALIZAÇÃO', 105, 185, { align: 'center' });
+    
+    addLine('TIPOLOGIA', formData.tipologia === 'Outro' ? (formData.tipologiaOutro || '').toUpperCase() : formData.tipologia.toUpperCase(), 245);
+
+    doc.addPage();
+    drawCommonLayout(doc);
+    doc.setFontSize(12); doc.setFont('helvetica', 'bold');
+    doc.text('LEVANTAMENTO DE DANOS', 105, 40, { align: 'center' });
+
+    let currentY = 55;
+    for (const dano of formData.danos) {
+      if (currentY > 220) { doc.addPage(); drawCommonLayout(doc); currentY = 45; }
+      doc.setFontSize(10); doc.setFont('helvetica', 'bold');
+      doc.text(`${dano.tipo.toUpperCase()}:`, 20, currentY);
+      doc.setFont('helvetica', 'normal');
+      const descLines = doc.splitTextToSize(dano.descricao, 170);
+      doc.text(descLines, 20, currentY + 5);
+      currentY += (descLines.length * 5) + 10;
+      if (dano.fotos.length > 0) {
+        let x = 20;
+        const imgW = 82;
+        const imgH = 62;
+        for (let i = 0; i < Math.min(dano.fotos.length, 2); i++) {
+          try { doc.addImage(dano.fotos[i], 'JPEG', x, currentY, imgW, imgH); x += 85; } catch(e) {}
+        }
+        currentY += 70;
+      }
     }
 
-    doc.setFont('helvetica', 'bold');
-    doc.text('AVALIAÇÃO FINAL', 105, y + 20, { align: 'center' });
-    y += 35;
+    if (currentY > 180) { doc.addPage(); drawCommonLayout(doc); currentY = 45; }
+    currentY += 10;
+    doc.setFontSize(12); doc.setFont('helvetica', 'bold');
+    doc.text('AVALIAÇÃO FINAL', 105, currentY, { align: 'center' });
+    currentY += 15;
     doc.setFontSize(10);
-    doc.text(`CLASSIFICAÇÃO: ${formData.classificacao.toUpperCase()}`, 20, y);
-    doc.text(`NÍVEL DE DESTRUIÇÃO: ${formData.nivelDestruicao.toUpperCase()}`, 20, y + 10);
-    doc.text(`PERCENTUAL CONSIDERADO DE DESTRUIÇÃO: ${formData.percentualDestruicao}`, 20, y + 20);
-    
-    y += 50;
+    addLine('CLASSIFICAÇÃO', formData.classificacao.toUpperCase(), currentY);
+    addLine('NÍVEL DE DESTRUIÇÃO', formData.nivelDestruicao.toUpperCase(), currentY + 10);
+    addLine('PERCENTUAL CALCULADO', formData.percentualDestruicao, currentY + 20);
+
+    let signY = pageHeight - 65;
     doc.setFont('helvetica', 'bold');
-    doc.text(eng ? eng.nome.toUpperCase() : 'NOME DO ENGENHEIRO NÃO INFORMADO', 105, y, { align: 'center' });
+    doc.text(eng ? eng.nome.toUpperCase() : 'ENGENHEIRO NÃO SELECIONADO', 105, signY, { align: 'center' });
     doc.setFont('helvetica', 'normal');
-    doc.text('Engenheiro Civil', 105, y + 5, { align: 'center' });
-    doc.text(eng ? `CREA ${eng.estado} ${eng.crea}` : 'REGISTRO NÃO INFORMADO', 105, y + 10, { align: 'center' });
-    
-    drawFooter(doc);
-    doc.save(`laudo_${formData.municipio}_${Date.now()}.pdf`);
+    doc.text('Engenheiro Civil', 105, signY + 5, { align: 'center' });
+    doc.text(eng ? `CREA ${eng.estado} ${eng.crea}` : '', 105, signY + 10, { align: 'center' });
+
+    doc.save(`LAUDO_DC_PR_${formData.municipio.replace(/\s/g, '_')}.pdf`);
   };
 
-  const inputClasses = "w-full p-2 border border-slate-300 rounded focus:ring-2 focus:ring-orange-500 outline-none bg-white text-black placeholder-slate-400";
+  const handleAddEngenheiro = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newEng.nome && newEng.crea) {
+      const engineer: Engenheiro = { id: Date.now().toString(), nome: newEng.nome, crea: newEng.crea, estado: newEng.estado || 'PR' };
+      setEngenheiros(prev => [...prev, engineer]);
+      setFormData(prev => ({ ...prev, engenheiroId: engineer.id }));
+      setShowEngForm(false);
+    }
+  };
+
+  const handleDanoToggle = (tipo: string) => {
+    setFormData(prev => {
+      const exists = prev.danos.find(d => d.tipo === tipo);
+      if (exists) return { ...prev, danos: prev.danos.filter(d => d.tipo !== tipo) };
+      return { ...prev, danos: [...prev.danos, { tipo, descricao: '', fotos: [] }] };
+    });
+  };
+
+  const handlePhotoUpload = async (tipo: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const files = Array.from(e.target.files);
+      const base64s = await Promise.all(files.map(f => new Promise<string>(res => {
+        const r = new FileReader(); r.readAsDataURL(f); r.onload = () => res(r.result as string);
+      })));
+      setFormData(prev => ({ ...prev, danos: prev.danos.map(d => d.tipo === tipo ? { ...d, fotos: [...d.fotos, ...base64s] } : d) }));
+    }
+  };
+
+  // Cores institucionais: Laranja #FF6600, Azul Marinho #003366
+  const inputClasses = "w-full p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#FF6600] outline-none bg-white text-black text-sm transition-all";
 
   return (
-    <div className="min-h-screen pb-20 bg-slate-50">
-      <header className="bg-orange-600 text-white p-6 shadow-lg mb-8">
-        <div className="container mx-auto flex flex-col md:flex-row items-center justify-between">
-          <div className="flex items-center gap-4">
-             <div className="bg-white p-2 rounded-full">
-                <svg className="w-10 h-10 text-orange-600" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 2L1 21h22L12 2zm0 3.45l8.15 14.1H3.85L12 5.45zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z" />
-                </svg>
-             </div>
-             <div>
-               <h1 className="text-2xl font-bold uppercase tracking-tight">Defesa Civil Paraná</h1>
-               <p className="text-sm opacity-90">Emissão de Laudo Técnico de Imóveis</p>
-             </div>
-          </div>
-          <div className="mt-4 md:mt-0">
-             <span className="text-xs bg-orange-700 px-3 py-1 rounded-full border border-orange-400 font-semibold">Sistema Oficial de Laudos</span>
-          </div>
+    <div className="min-h-screen bg-[#F4F4F4] font-sans pb-12 text-slate-900">
+      <header className="bg-[#FF6600] text-white p-6 shadow-xl border-b-4 border-[#003366]">
+        <div className="container mx-auto flex items-center gap-6">
+           <div className="bg-white p-3 rounded-2xl shadow-lg">
+              <svg className="w-12 h-12 text-[#FF6600]" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L1 21h22L12 2zm0 3.45l8.15 14.1H3.85L12 5.45zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
+           </div>
+           <div>
+             <h1 className="text-3xl font-black uppercase tracking-tight">Defesa Civil Paraná</h1>
+             <p className="text-sm font-semibold opacity-90 uppercase tracking-widest">Coordenadoria Estadual</p>
+           </div>
         </div>
       </header>
 
-      <main className="container mx-auto px-4 max-w-5xl">
-        <div className="bg-white rounded-xl shadow-xl overflow-hidden border border-slate-200">
-          <div className="p-6 bg-slate-100 border-b border-slate-200">
-            <h2 className="text-lg font-bold text-slate-800 uppercase">1. Identificação Geral</h2>
+      <main className="container mx-auto px-4 mt-8 max-w-6xl">
+        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
+          <div className="px-8 py-4 bg-[#003366] text-white">
+            <h2 className="text-sm font-black uppercase tracking-widest text-center">Formulário de Inspeção Técnica de Imóveis</h2>
           </div>
           
-          <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Data da Inspeção</label>
-              <input type="date" value={formData.data} onChange={e => setFormData({...formData, data: e.target.value})} className={inputClasses} />
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Município</label>
+          <div className="p-8 grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Município Afetado</label>
               <select value={formData.municipio} onChange={e => setFormData({...formData, municipio: e.target.value})} className={inputClasses}>
-                <option value="">Selecione um Município</option>
+                <option value="">Selecione...</option>
                 {MUNICIPIOS_PR.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </div>
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Engenheiro Responsável</label>
-              <select 
-                value={formData.engenheiroId} 
-                onChange={e => handleEngenheiroChange(e.target.value)} 
-                className={inputClasses}
-              >
-                <option value="">Selecione...</option>
-                {engenheiros.map(e => (
-                  <option key={e.id} value={e.id}>{e.nome} (CREA-{e.estado} {e.crea})</option>
-                ))}
-                <option value="OUTRO" className="font-bold text-orange-600">Outro (Cadastrar novo...)</option>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Data do Levantamento</label>
+              <input type="text" value={formData.data} onChange={e => setFormData({...formData, data: e.target.value})} className={inputClasses} />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Engenheiro Responsável</label>
+              <select value={formData.engenheiroId} onChange={e => e.target.value === 'OUTRO' ? setShowEngForm(true) : setFormData({...formData, engenheiroId: e.target.value})} className={inputClasses}>
+                <option value="">Selecione o Profissional...</option>
+                {engenheiros.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
+                <option value="OUTRO" className="font-bold text-[#FF6600]">+ Cadastrar Novo</option>
               </select>
             </div>
           </div>
 
-          <div className="p-6 border-t border-slate-200 bg-white">
-            <h3 className="text-md font-bold text-slate-800 uppercase mb-4">2. Dados do Imóvel e Localização</h3>
+          <div className="px-8 py-6 bg-slate-50 border-y border-slate-200">
+            <h3 className="text-xs font-black text-[#003366] uppercase tracking-widest mb-6 border-l-4 border-[#FF6600] pl-3">Dados Cadastrais do Imóvel</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Inscrição Municipal</label>
-                <input type="number" value={formData.inscricaoMunicipal} onChange={e => setFormData({...formData, inscricaoMunicipal: e.target.value})} className={inputClasses} placeholder="Digite o número da inscrição" />
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Inscrição Municipal</label>
+                <input type="text" value={formData.inscricaoMunicipal} onChange={e => setFormData({...formData, inscricaoMunicipal: e.target.value})} className={inputClasses} />
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Proprietário</label>
-                <input type="text" value={formData.proprietario} onChange={e => setFormData({...formData, proprietario: e.target.value})} className={inputClasses} placeholder="Nome do Proprietário" />
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Proprietário Legal</label>
+                <input type="text" value={formData.proprietario} onChange={e => setFormData({...formData, proprietario: e.target.value})} className={inputClasses} />
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Requerente</label>
-                <input type="text" value={formData.requerente} onChange={e => setFormData({...formData, requerente: e.target.value})} className={inputClasses} placeholder="Nome do Requerente" />
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Nome do Requerente</label>
+                <input type="text" value={formData.requerente} onChange={e => setFormData({...formData, requerente: e.target.value})} className={inputClasses} />
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Endereço Completo</label>
-                <input type="text" value={formData.endereco} onChange={e => setFormData({...formData, endereco: e.target.value})} className={inputClasses} placeholder="Rua, Número, Bairro, CEP" />
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Endereço Completo</label>
+                <div className="flex gap-2">
+                  <input type="text" value={formData.endereco} onChange={e => setFormData({...formData, endereco: e.target.value})} className={inputClasses} />
+                  <button onClick={() => setShowMapModal(true)} className="bg-[#003366] hover:bg-[#001a33] text-white font-black text-[10px] uppercase px-4 rounded-lg shadow-md transition-all">MAPA</button>
+                </div>
               </div>
-            </div>
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Latitude</label>
-                <input type="text" value={formData.coordenadas.lat} onChange={e => setFormData({...formData, coordenadas: {...formData.coordenadas, lat: e.target.value}})} className={inputClasses} placeholder="Ex: -25.4284" />
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Latitude</label>
+                <input type="text" value={formData.coordenadas.lat} onChange={e => setFormData({...formData, coordenadas: {...formData.coordenadas, lat: e.target.value}})} className={inputClasses} />
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Longitude</label>
-                <input type="text" value={formData.coordenadas.lng} onChange={e => setFormData({...formData, coordenadas: {...formData.coordenadas, lng: e.target.value}})} className={inputClasses} placeholder="Ex: -49.2733" />
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Longitude</label>
+                <input type="text" value={formData.coordenadas.lng} onChange={e => setFormData({...formData, coordenadas: {...formData.coordenadas, lng: e.target.value}})} className={inputClasses} />
               </div>
             </div>
           </div>
 
-          <div className="p-6 border-t border-slate-200">
-             <h3 className="text-md font-bold text-slate-800 mb-4 uppercase">3. Tipologia da Edificação</h3>
+          <div className="p-8">
+             <h3 className="text-xs font-black text-[#003366] uppercase tracking-widest mb-4 border-l-4 border-[#FF6600] pl-3">Tipologia da Edificação</h3>
              <select value={formData.tipologia} onChange={e => setFormData({...formData, tipologia: e.target.value})} className={inputClasses}>
                 <option value="">Selecione...</option>
                 {TIPOLOGIAS.map(t => <option key={t} value={t}>{t}</option>)}
              </select>
-             {formData.tipologia === 'Outro' && (
-               <div className="mt-4 animate-in fade-in zoom-in duration-200">
-                 <label className="block text-sm font-semibold text-slate-700 mb-1">Descrição Detalhada</label>
-                 <textarea value={formData.tipologiaOutro} onChange={e => setFormData({...formData, tipologiaOutro: e.target.value})} className={inputClasses} rows={2} />
-               </div>
-             )}
+             {formData.tipologia === 'Outro' && <textarea value={formData.tipologiaOutro} onChange={e => setFormData({...formData, tipologiaOutro: e.target.value})} className={inputClasses + " mt-4 h-20 resize-none"} placeholder="Especifique a tipologia..." />}
           </div>
 
-          <div className="p-6 border-t border-slate-200 bg-slate-50">
-            <h3 className="text-md font-bold text-slate-800 mb-4 uppercase">4. Levantamento de Danos</h3>
-            <div className="flex flex-wrap gap-2 mb-6">
-              {DANOS_OPCOES.map(dano => (
-                <button
-                  key={dano}
-                  onClick={() => handleDanoToggle(dano)}
-                  className={`px-3 py-1.5 rounded-md text-xs font-bold border transition-all ${
-                    formData.danos.find(d => d.tipo === dano)
-                    ? 'bg-orange-600 text-white border-orange-700 shadow-md transform scale-105'
-                    : 'bg-white text-slate-600 border-slate-300 hover:border-orange-500 active:scale-95'
-                  }`}
-                >
-                  {dano}
-                </button>
-              ))}
-            </div>
-
-            <div className="space-y-4">
-              {formData.danos.map((dano) => (
-                <div key={dano.tipo} className="bg-white p-4 rounded-lg border border-slate-200 shadow-sm">
-                  <div className="flex justify-between items-center mb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-orange-700 uppercase text-xs tracking-wider bg-orange-50 px-2 py-1 rounded">{dano.tipo}</span>
-                      {isAnalyzing === dano.tipo && <span className="text-[10px] animate-pulse text-blue-600 font-bold italic">Analisando imagem com IA...</span>}
-                    </div>
-                    <button onClick={() => handleDanoToggle(dano.tipo)} className="text-xs text-red-500 hover:text-red-700 font-bold">REMOVER</button>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Descrição Técnica</label>
+          <div className="p-8 bg-slate-100 border-t border-slate-200">
+             <h3 className="text-xs font-black text-[#003366] uppercase tracking-widest mb-6 border-l-4 border-[#FF6600] pl-3">Levantamento de Danos Observados</h3>
+             <div className="flex flex-wrap gap-2 mb-8">
+                {DANOS_OPCOES.map(d => (
+                  <button
+                    key={d}
+                    onClick={() => handleDanoToggle(d)}
+                    className={`px-4 py-2 rounded-xl text-[10px] font-bold border-2 transition-all ${
+                      formData.danos.find(di => di.tipo === d)
+                      ? 'bg-[#FF6600] text-white border-[#cc5200] shadow-lg scale-105'
+                      : 'bg-white text-slate-500 border-slate-300 hover:border-[#FF6600]'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                ))}
+             </div>
+             <div className="space-y-6">
+                {formData.danos.map(dano => (
+                  <div key={dano.tipo} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-1 h-full bg-[#FF6600]"></div>
+                    <span className="font-black text-[#FF6600] text-[11px] uppercase mb-4 block tracking-wider">{dano.tipo}</span>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       <textarea
                         value={dano.descricao}
                         onChange={e => setFormData(prev => ({
-                          ...prev,
-                          danos: prev.danos.map(d => d.tipo === dano.tipo ? { ...d, descricao: e.target.value } : d)
+                          ...prev, danos: prev.danos.map(d => d.tipo === dano.tipo ? {...d, descricao: e.target.value} : d)
                         }))}
-                        className={`${inputClasses} text-sm`}
-                        rows={3}
+                        className={inputClasses + " h-32 resize-none"}
+                        placeholder="Descreva a situação encontrada..."
                       />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-500 mb-1 uppercase">Fotos (Análise Automática IA)</label>
-                      <input
-                        type="file"
-                        multiple
-                        accept="image/*"
-                        onChange={e => handlePhotoUpload(dano.tipo, e)}
-                        className="text-xs block w-full text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border file:border-orange-200 file:text-xs file:font-bold file:bg-orange-50 file:text-orange-700 cursor-pointer"
-                      />
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        {dano.fotos.map((foto, fIdx) => (
-                          <img key={fIdx} src={foto} className="w-16 h-16 object-cover rounded border border-slate-200 shadow-sm" alt="Dano" />
-                        ))}
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Documentação Fotográfica</label>
+                        <input type="file" multiple accept="image/*" onChange={e => handlePhotoUpload(dano.tipo, e)} className="text-[10px] w-full file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-orange-50 file:text-[#FF6600] hover:file:bg-orange-100" />
+                        <div className="flex flex-wrap gap-2">
+                          {dano.fotos.map((f, i) => <img key={i} src={f} className="w-20 h-20 object-cover rounded-lg border-2 border-slate-100 shadow-sm" />)}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+             </div>
           </div>
 
-          <div className="p-6 border-t border-slate-200 bg-white">
-            <h3 className="text-md font-bold text-slate-800 mb-4 uppercase">5. Avaliação Final</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Classificação</label>
-                <select
-                  value={formData.classificacao}
-                  onChange={e => updateCalculatedFields(e.target.value as ClassificacaoDano)}
-                  className={`${inputClasses} font-bold text-orange-700`}
-                >
+          <div className="p-8 bg-white border-t border-slate-200">
+            <h3 className="text-xs font-black text-[#003366] uppercase tracking-widest mb-6 border-l-4 border-[#FF6600] pl-3">Avaliação e Classificação de Danos</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-500 uppercase">Classificação Técnica</label>
+                <select value={formData.classificacao} onChange={e => updateCalculatedFields(e.target.value as ClassificacaoDano)} className={inputClasses + " font-black text-[#FF6600]"}>
                   {Object.values(ClassificacaoDano).map(v => <option key={v} value={v}>{v}</option>)}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1 text-center">Nível de Destruição</label>
-                <div className="p-2 border border-slate-200 rounded bg-slate-50 text-slate-800 font-bold uppercase text-center text-sm">{formData.nivelDestruicao}</div>
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl text-center">
+                <span className="block text-[8px] text-slate-400 font-black uppercase mb-1">Nível de Destruição</span>
+                <span className="text-xs font-black text-[#003366] uppercase">{formData.nivelDestruicao}</span>
               </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1 text-center">Percentual</label>
-                <div className="p-2 border border-slate-200 rounded bg-slate-50 text-slate-800 font-bold text-center text-sm">{formData.percentualDestruicao}</div>
+              <div className="p-4 bg-orange-50 border border-orange-100 rounded-2xl text-center">
+                <span className="block text-[8px] text-[#FF6600] font-black uppercase mb-1">Percentual de Dano</span>
+                <span className="text-lg font-black text-[#FF6600]">{formData.percentualDestruicao}</span>
               </div>
             </div>
           </div>
 
-          <div className="p-8 bg-slate-800 flex justify-center">
-            <button
-              onClick={generatePDF}
-              className="bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 px-16 rounded shadow-2xl transition-all flex items-center gap-3 transform hover:-translate-y-1 active:scale-95 text-lg"
-            >
-              FINALIZAR LAUDO E GERAR PDF
+          <div className="p-10 bg-[#001a33] flex justify-center border-t-8 border-[#FF6600]">
+            <button onClick={generatePDF} className="bg-[#FF6600] hover:bg-[#e65c00] text-white font-black py-5 px-16 rounded-2xl shadow-3xl transition-all transform hover:-translate-y-1 active:scale-95 text-lg uppercase tracking-widest flex items-center gap-4">
+              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm9-9h-6v2h4v7H7V9h4V7H3v11h18V7z"/></svg>
+              Finalizar e Gerar Laudo PDF
             </button>
           </div>
         </div>
       </main>
 
-      {/* Modals */}
+      {/* MAP MODAL */}
+      {showMapModal && (
+        <div className="fixed inset-0 bg-[#001a33]/95 backdrop-blur-xl z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2.5rem] shadow-3xl w-full max-w-5xl overflow-hidden border-4 border-[#FF6600]">
+            <div className="p-5 bg-[#003366] text-white flex justify-between items-center">
+              <span className="text-xs font-black tracking-widest uppercase ml-4">Geolocalização do Imóvel</span>
+              <button onClick={() => setShowMapModal(false)} className="text-3xl hover:text-[#FF6600] mr-4 transition-colors">&times;</button>
+            </div>
+            <div id="map-selector" className="w-full"></div>
+            <div className="p-6 bg-slate-50 flex justify-end gap-6 border-t border-slate-200">
+              <button onClick={() => setShowMapModal(false)} className="bg-[#FF6600] hover:bg-[#e65c00] text-white px-12 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow-2xl transition-all active:scale-95">Confirmar Localização</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ENGINEER MODAL */}
       {showEngForm && (
-        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden">
-            <div className="p-4 bg-orange-600 text-white font-bold flex justify-between items-center">
-              <span>CADASTRAR NOVO ENGENHEIRO</span>
+        <div className="fixed inset-0 bg-[#001a33]/80 backdrop-blur-md z-[110] flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-3xl w-full max-w-lg overflow-hidden border-t-8 border-[#FF6600]">
+            <div className="p-5 bg-[#003366] text-white font-black text-xs uppercase flex justify-between tracking-widest">
+              <span>Cadastro de Perito / Engenheiro</span>
               <button onClick={() => setShowEngForm(false)} className="text-2xl">&times;</button>
             </div>
-            <form onSubmit={handleAddEngenheiro} className="p-8 space-y-4">
-              <input required type="text" value={newEng.nome || ''} onChange={e => setNewEng({...newEng, nome: e.target.value})} className={inputClasses} placeholder="Nome Completo" />
-              <div className="grid grid-cols-2 gap-4">
-                <input required type="text" value={newEng.crea || ''} onChange={e => setNewEng({...newEng, crea: e.target.value})} className={inputClasses} placeholder="Registro CREA" />
-                <select required value={newEng.estado || 'PR'} onChange={e => setNewEng({...newEng, estado: e.target.value})} className={inputClasses}>
-                  {ESTADOS_BR.map(uf => <option key={uf} value={uf}>{uf}</option>)}
-                </select>
+            <form onSubmit={handleAddEngenheiro} className="p-8 space-y-5">
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Nome Completo</label>
+                <input required type="text" value={newEng.nome || ''} onChange={e => setNewEng({...newEng, nome: e.target.value})} className={inputClasses} />
               </div>
-              <input type="text" className={inputClasses} placeholder="Endereço de Contato" />
-              <input type="tel" className={inputClasses} placeholder="Telefone de Contato" />
-              <button type="submit" className="w-full bg-orange-600 text-white py-3 rounded font-bold hover:bg-orange-700 shadow-lg">SALVAR E SELECIONAR</button>
+              <div className="grid grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">CREA</label>
+                  <input required type="text" value={newEng.crea || ''} onChange={e => setNewEng({...newEng, crea: e.target.value})} className={inputClasses} />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">UF</label>
+                  <select value={newEng.estado} onChange={e => setNewEng({...newEng, estado: e.target.value})} className={inputClasses}>
+                    {ESTADOS_BR.map(uf => <option key={uf} value={uf}>{uf}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Endereço Profissional</label>
+                <input type="text" className={inputClasses} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">Telefone de Contato</label>
+                <input type="tel" className={inputClasses} />
+              </div>
+              <button type="submit" className="w-full bg-[#003366] hover:bg-[#001a33] text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest shadow-xl transition-all">Salvar Cadastro</button>
             </form>
           </div>
         </div>
