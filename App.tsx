@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { MUNICIPIOS_PR, TIPOLOGIAS, DANOS_OPCOES, ESTADOS_BR } from './constants';
 import { ClassificacaoDano, Engenheiro, Laudo } from './types';
 import { jsPDF } from 'jspdf';
@@ -14,8 +14,6 @@ const App: React.FC = () => {
   ]);
 
   const [showEngForm, setShowEngForm] = useState(false);
-  const [showMap, setShowMap] = useState(false);
-  const [mapLayer, setMapLayer] = useState<'streets' | 'hybrid'>('hybrid');
   const [newEng, setNewEng] = useState<Partial<Engenheiro>>({ estado: 'PR' });
   const [isAnalyzing, setIsAnalyzing] = useState<string | null>(null);
 
@@ -35,41 +33,6 @@ const App: React.FC = () => {
     nivelDestruicao: 'Sem Destruição',
     percentualDestruicao: '10%'
   });
-
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data.type === 'MAP_CLICK') {
-        const { lat, lng } = event.data;
-        handleMapSelection(lat, lng);
-      }
-    };
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
-
-  const handleMapSelection = async (lat: number, lng: number) => {
-    setFormData(prev => ({
-      ...prev,
-      coordenadas: { lat: lat.toFixed(6), lng: lng.toFixed(6) }
-    }));
-
-    try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`);
-      const data = await res.json();
-      if (data.address) {
-        const addr = data.address;
-        const street = addr.road || addr.pedestrian || '';
-        const number = addr.house_number || 'S/N';
-        const neighborhood = addr.suburb || addr.neighbourhood || addr.city_district || '';
-        const postcode = addr.postcode || '';
-        
-        const formattedAddress = `${street}, ${number}, ${neighborhood} - CEP: ${postcode}`;
-        setFormData(prev => ({ ...prev, endereco: formattedAddress }));
-      }
-    } catch (e) {
-      console.error("Geocoding failed", e);
-    }
-  };
 
   const updateCalculatedFields = (classificacao: ClassificacaoDano) => {
     let nivel = '';
@@ -191,10 +154,6 @@ const App: React.FC = () => {
     doc.text('ESTADO DO PARANÁ', 105, 20, { align: 'center' });
     doc.text('COORDENADORIA ESTADUAL DA DEFESA CIVIL', 105, 25, { align: 'center' });
     doc.text('FUNDO ESTADUAL PARA CALAMIDADES PÚBLICAS', 105, 30, { align: 'center' });
-    
-    doc.setDrawColor(200);
-    doc.rect(20, 15, 25, 20); // Logo Paraná placeholder
-    doc.rect(165, 15, 25, 20); // Logo Defesa Civil placeholder
   };
 
   const drawFooter = (doc: jsPDF) => {
@@ -215,7 +174,6 @@ const App: React.FC = () => {
 
   const generatePDF = async () => {
     const doc = new jsPDF();
-    // Busca os dados completos do engenheiro na lista usando o ID selecionado
     const eng = engenheiros.find(e => e.id === formData.engenheiroId);
     
     // PAGE 1
@@ -233,16 +191,10 @@ const App: React.FC = () => {
     doc.text(`REQUERENTE: ${formData.requerente.toUpperCase()}`, 20, 130);
     doc.text(`ENDEREÇO: ${formData.endereco.toUpperCase()}`, 20, 140);
     doc.text(`COORDENADAS: ${formData.coordenadas.lat}, ${formData.coordenadas.lng}`, 20, 150);
-    doc.setDrawColor(0);
-    doc.rect(20, 155, 170, 80);
-    doc.setFontSize(8);
-    doc.text('MAPA DE LOCALIZAÇÃO', 105, 195, { align: 'center' });
-    doc.setFontSize(10);
-    doc.text(`COORDENADAS: ${formData.coordenadas.lat}, ${formData.coordenadas.lng}`, 20, 245);
-    doc.text(`TIPOLOGIA: ${formData.tipologia === 'Outro' ? formData.tipologiaOutro?.toUpperCase() : formData.tipologia.toUpperCase()}`, 20, 255);
+    doc.text(`TIPOLOGIA: ${formData.tipologia === 'Outro' ? formData.tipologiaOutro?.toUpperCase() : formData.tipologia.toUpperCase()}`, 20, 160);
     drawFooter(doc);
 
-    // PAGE 2
+    // PAGE 2 (Levantamento de Danos)
     doc.addPage();
     drawHeader(doc);
     doc.setFontSize(12);
@@ -285,7 +237,7 @@ const App: React.FC = () => {
     }
 
     doc.setFont('helvetica', 'bold');
-    doc.text('AÇÕES DO EVENTO CLIMÁTICO', 105, y + 20, { align: 'center' });
+    doc.text('AVALIAÇÃO FINAL', 105, y + 20, { align: 'center' });
     y += 35;
     doc.setFontSize(10);
     doc.text(`CLASSIFICAÇÃO: ${formData.classificacao.toUpperCase()}`, 20, y);
@@ -294,7 +246,6 @@ const App: React.FC = () => {
     
     y += 50;
     doc.setFont('helvetica', 'bold');
-    // Uso direto do engenheiro encontrado para garantir exibição correta
     doc.text(eng ? eng.nome.toUpperCase() : 'NOME DO ENGENHEIRO NÃO INFORMADO', 105, y, { align: 'center' });
     doc.setFont('helvetica', 'normal');
     doc.text('Engenheiro Civil', 105, y + 5, { align: 'center' });
@@ -330,7 +281,7 @@ const App: React.FC = () => {
       <main className="container mx-auto px-4 max-w-5xl">
         <div className="bg-white rounded-xl shadow-xl overflow-hidden border border-slate-200">
           <div className="p-6 bg-slate-100 border-b border-slate-200">
-            <h2 className="text-lg font-bold text-slate-800 uppercase">1. Identificação</h2>
+            <h2 className="text-lg font-bold text-slate-800 uppercase">1. Identificação Geral</h2>
           </div>
           
           <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -362,53 +313,39 @@ const App: React.FC = () => {
           </div>
 
           <div className="p-6 border-t border-slate-200 bg-white">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-md font-bold text-slate-800 uppercase">2. Informações do Imóvel</h3>
-              <button 
-                onClick={() => {
-                  setMapLayer('hybrid');
-                  setShowMap(true);
-                }}
-                className="text-xs bg-orange-100 text-orange-700 px-3 py-1.5 rounded-md font-bold border border-orange-200 hover:bg-orange-200 transition-colors flex items-center gap-1"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                </svg>
-                MAPA PARA LOCALIZAÇÃO
-              </button>
-            </div>
+            <h3 className="text-md font-bold text-slate-800 uppercase mb-4">2. Dados do Imóvel e Localização</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">Inscrição Municipal</label>
-                <input type="number" value={formData.inscricaoMunicipal} onChange={e => setFormData({...formData, inscricaoMunicipal: e.target.value})} className={inputClasses} />
+                <input type="number" value={formData.inscricaoMunicipal} onChange={e => setFormData({...formData, inscricaoMunicipal: e.target.value})} className={inputClasses} placeholder="Digite o número da inscrição" />
               </div>
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">Proprietário</label>
-                <input type="text" value={formData.proprietario} onChange={e => setFormData({...formData, proprietario: e.target.value})} className={inputClasses} />
+                <input type="text" value={formData.proprietario} onChange={e => setFormData({...formData, proprietario: e.target.value})} className={inputClasses} placeholder="Nome do Proprietário" />
               </div>
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">Requerente</label>
-                <input type="text" value={formData.requerente} onChange={e => setFormData({...formData, requerente: e.target.value})} className={inputClasses} />
+                <input type="text" value={formData.requerente} onChange={e => setFormData({...formData, requerente: e.target.value})} className={inputClasses} placeholder="Nome do Requerente" />
               </div>
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">Endereço Completo</label>
-                <input type="text" value={formData.endereco} onChange={e => setFormData({...formData, endereco: e.target.value})} className={inputClasses} placeholder="Arraste o pin no mapa ou digite aqui..." />
+                <input type="text" value={formData.endereco} onChange={e => setFormData({...formData, endereco: e.target.value})} className={inputClasses} placeholder="Rua, Número, Bairro, CEP" />
               </div>
             </div>
             <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">Latitude</label>
-                <input type="text" value={formData.coordenadas.lat} onChange={e => setFormData({...formData, coordenadas: {...formData.coordenadas, lat: e.target.value}})} className={inputClasses} />
+                <input type="text" value={formData.coordenadas.lat} onChange={e => setFormData({...formData, coordenadas: {...formData.coordenadas, lat: e.target.value}})} className={inputClasses} placeholder="Ex: -25.4284" />
               </div>
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1">Longitude</label>
-                <input type="text" value={formData.coordenadas.lng} onChange={e => setFormData({...formData, coordenadas: {...formData.coordenadas, lng: e.target.value}})} className={inputClasses} />
+                <input type="text" value={formData.coordenadas.lng} onChange={e => setFormData({...formData, coordenadas: {...formData.coordenadas, lng: e.target.value}})} className={inputClasses} placeholder="Ex: -49.2733" />
               </div>
             </div>
           </div>
 
           <div className="p-6 border-t border-slate-200">
-             <h3 className="text-md font-bold text-slate-800 mb-4 uppercase">3. Tipologia</h3>
+             <h3 className="text-md font-bold text-slate-800 mb-4 uppercase">3. Tipologia da Edificação</h3>
              <select value={formData.tipologia} onChange={e => setFormData({...formData, tipologia: e.target.value})} className={inputClasses}>
                 <option value="">Selecione...</option>
                 {TIPOLOGIAS.map(t => <option key={t} value={t}>{t}</option>)}
@@ -523,7 +460,7 @@ const App: React.FC = () => {
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden">
             <div className="p-4 bg-orange-600 text-white font-bold flex justify-between items-center">
-              <span>CADASTRAR ENGENHEIRO</span>
+              <span>CADASTRAR NOVO ENGENHEIRO</span>
               <button onClick={() => setShowEngForm(false)} className="text-2xl">&times;</button>
             </div>
             <form onSubmit={handleAddEngenheiro} className="p-8 space-y-4">
@@ -534,70 +471,10 @@ const App: React.FC = () => {
                   {ESTADOS_BR.map(uf => <option key={uf} value={uf}>{uf}</option>)}
                 </select>
               </div>
-              <button type="submit" className="w-full bg-orange-600 text-white py-3 rounded font-bold hover:bg-orange-700">SALVAR E SELECIONAR</button>
+              <input type="text" className={inputClasses} placeholder="Endereço de Contato" />
+              <input type="tel" className={inputClasses} placeholder="Telefone de Contato" />
+              <button type="submit" className="w-full bg-orange-600 text-white py-3 rounded font-bold hover:bg-orange-700 shadow-lg">SALVAR E SELECIONAR</button>
             </form>
-          </div>
-        </div>
-      )}
-
-      {showMap && (
-        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center z-[110] p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl overflow-hidden h-[85vh] flex flex-col">
-            <div className="p-4 bg-slate-800 text-white font-bold flex justify-between items-center">
-              <span>SELECIONAR LOCALIZAÇÃO NO MAPA</span>
-              <button onClick={() => setShowMap(false)} className="text-2xl hover:text-orange-500">&times;</button>
-            </div>
-            <div className="relative flex-1 bg-slate-200">
-              <div className="absolute top-4 left-4 z-[120] flex gap-2">
-                <button onClick={() => setMapLayer('streets')} className={`px-4 py-2 rounded text-xs font-bold shadow ${mapLayer === 'streets' ? 'bg-orange-600 text-white' : 'bg-white text-slate-800'}`}>RUA</button>
-                <button onClick={() => setMapLayer('hybrid')} className={`px-4 py-2 rounded text-xs font-bold shadow ${mapLayer === 'hybrid' ? 'bg-orange-600 text-white' : 'bg-white text-slate-800'}`}>HÍBRIDO</button>
-              </div>
-              <iframe className="w-full h-full border-0" srcDoc={`
-                <!DOCTYPE html><html><head>
-                <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-                <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-                <style>#map { height: 100vh; }</style></head>
-                <body><div id="map"></div><script>
-                  const map = L.map('map');
-                  const streets = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
-                  const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}');
-                  const labelsCity = L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}');
-                  const labelsAlt = L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}');
-
-                  if ("${mapLayer}" === 'hybrid') {
-                    satellite.addTo(map);
-                    labelsCity.addTo(map);
-                    labelsAlt.addTo(map);
-                  } else {
-                    streets.addTo(map);
-                  }
-
-                  const searchCity = "${formData.municipio}" ? "${formData.municipio}" + ", Paraná, Brazil" : "Curitiba, Paraná, Brazil";
-                  
-                  fetch("https://nominatim.openstreetmap.org/search?format=json&q=" + encodeURIComponent(searchCity))
-                    .then(r => r.json())
-                    .then(data => {
-                      if (data.length > 0) {
-                        map.setView([data[0].lat, data[0].lon], 15);
-                      } else {
-                        map.setView([-25.4284, -49.2733], 13);
-                      }
-                    })
-                    .catch(() => map.setView([-25.4284, -49.2733], 13));
-
-                  let m; 
-                  map.on('click', e => {
-                    const { lat, lng } = e.latlng;
-                    if (m) m.remove(); m = L.marker([lat, lng]).addTo(map);
-                    window.parent.postMessage({ type: 'MAP_CLICK', lat, lng }, '*');
-                  });
-                </script></body></html>
-              `} />
-            </div>
-            <div className="p-4 bg-slate-50 border-t flex justify-between items-center">
-              <div className="text-xs font-mono">{formData.coordenadas.lat || '---'}, {formData.coordenadas.lng || '---'}</div>
-              <button onClick={() => setShowMap(false)} className="bg-slate-800 text-white px-8 py-2 rounded font-bold hover:bg-slate-700">CONFIRMAR LOCALIZAÇÃO</button>
-            </div>
           </div>
         </div>
       )}
